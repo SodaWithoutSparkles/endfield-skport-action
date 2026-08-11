@@ -1,1 +1,102 @@
 # endfield-skport-action
+
+Automated daily check-in for **Arknights: Endfield** via [skport.com](https://game.skport.com).
+
+## Features
+
+- ✅ **One-click daily sign-in** — runs the same attendance call the website makes
+- 🔁 **Duplicate-safe** — checks the server calendar before signing; never double-signs
+- 🐍 **Zero dependencies** — pure Python 3.10+ standard library, no `pip install`
+- 🔔 **Discord notifications** — per-profile results (with optional `@mention`)
+- 🏃 **CI-ready** — ships with a GitHub Actions workflow that runs 4×/day
+- 🛡️ **Security-aware** — credentials are git-ignored and redacted from logs
+
+## Quick start
+
+Two ways to run it — pick one:
+
+|          | Local (cron / manual)                              | GitHub Actions                                      |
+| -------- | -------------------------------------------------- | --------------------------------------------------- |
+| Config   | `config.json`                                      | Repository secrets                                  |
+| Setup    | [docs/setup.md](docs/setup.md#local-configuration) | [docs/setup.md](docs/setup.md#github-actions-setup) |
+| Schedule | your own cron                                      | [docs/github-actions.md](docs/github-actions.md)    |
+
+```bash
+# local run with config.json
+python main.py --config-source json
+
+# local run with environment variables (env overrides json with --config-source both)
+python main.py --config-source both
+```
+
+## Getting your keys (DevTools)
+
+The script needs two per-account credential values that skport stores in your browser's **Local Storage** for `https://game.skport.com`:
+
+| Key                  | What it is                                      |
+| -------------------- | ----------------------------------------------- |
+| `SK_OAUTH_CRED_KEY`  | OAuth credential used to authenticate API calls |
+| `SK_TOKEN_CACHE_KEY` | Session token used to sign API requests         |
+
+### How to find them
+
+1. Log in at <https://game.skport.com>
+2. Open DevTools (**F12**)
+3. Go to **Storage** (Firefox) or **Application** (Chrome) → **Local Storage** → `https://game.skport.com`
+
+![Local Storage panel with SK_OAUTH_CRED_KEY and SK_TOKEN_CACHE_KEY](assets/storage.png)
+
+You should see rows named `SK_OAUTH_CRED_KEY` and `SK_TOKEN_CACHE_KEY`. Copy **both values** — they never expire on the website side while you stay logged in.
+
+> 💡 **Using this with the GitHub Action?** Your game ID and server can be read from the `sk-game-role` request header in DevTools → **Network** (it has the format `3_{gameId}_{server}`), shown below:
+
+![Network tab showing the attendance request headers including cred, sign and sk-game-role](assets/network_tools.png)
+
+Full walkthroughs: [docs/setup.md](docs/setup.md)
+
+## Configuration reference
+
+### Profiles (one per game account)
+
+| Field                | Required | Default      | Description                                    |
+| -------------------- | -------- | ------------ | ---------------------------------------------- |
+| `SK_OAUTH_CRED_KEY`  | ✅        | —            | From Local Storage (see above)                 |
+| `SK_TOKEN_CACHE_KEY` | ✅        | —            | From Local Storage (see above)                 |
+| `id`                 | ✅        | —            | Game role ID (from the `sk-game-role` header)  |
+| `server`             | —        | `2`          | Server ID (second segment of `sk-game-role`)   |
+| `language`           | —        | `en`         | `sk-language` header value                     |
+| `accountName`        | —        | `Account N`  | Display name used in messages                  |
+| `myDiscordID`        | —        | global value | Discord user ID to `@mention` in notifications |
+
+### Global settings
+
+| Key                | Default | Description                                                                       |
+| ------------------ | ------- | --------------------------------------------------------------------------------- |
+| `discord_notify`   | `true`  | Send results to Discord. Automatically disabled when no webhook is configured     |
+| `discordWebhook`   | —       | Discord webhook URL (keep empty to disable)                                       |
+| `myDiscordID`      | —       | Default Discord user ID for all profiles                                          |
+| `last_signin_date` | —       | **Actions only** — managed automatically by the workflow; ignored in JSON configs |
+
+Use `REPLACE_ME` as a placeholder for anything you haven't set yet — it is treated as "not configured".
+
+## Security
+
+- `config.json` is **git-ignored** — keep your keys out of version control
+- `SK_OAUTH_CRED_KEY` / `SK_TOKEN_CACHE_KEY` values are redacted (`[REDACTED]`) from error messages before they reach logs or Discord
+- Treat these values like passwords: anyone with them can act as your account
+
+## Documentation
+
+| Doc                                                | Contents                                           |
+| -------------------------------------------------- | -------------------------------------------------- |
+| [docs/setup.md](docs/setup.md)                     | Finding keys, local config, GitHub Actions secrets |
+| [docs/github-actions.md](docs/github-actions.md)   | Workflow behavior: schedule, retries, variables    |
+| [docs/how-it-works.md](docs/how-it-works.md)       | API flow, signature algorithm, exit codes          |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Common errors and fixes                            |
+
+## License
+
+MIT — see [LICENSE](LICENSE). 
+
+## Acknowledgments
+- Adapted from: [canaria3406/skport-auto-sign](https://github.com/canaria3406/skport-auto-sign).

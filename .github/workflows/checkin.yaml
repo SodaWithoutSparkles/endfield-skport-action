@@ -1,0 +1,57 @@
+name: Skport Daily Auto Check-in
+
+on:
+  schedule:
+    # Runs 4 times daily (00:00, 06:00, 12:00, 18:00 UTC)
+    - cron: '0 0,6,12,18 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force execution (ignore same-day check-in restriction)'
+        type: boolean
+        default: true
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      variables: write # Required for 'gh variable set' without git commits
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run Auto Sign Script
+        id: run_sign
+        env:
+          SKPORT_PROFILES_JSON: ${{ secrets.SKPORT_PROFILES_JSON }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          MY_DISCORD_ID: ${{ secrets.MY_DISCORD_ID }}
+          DISCORD_NOTIFY: ${{ secrets.DISCORD_NOTIFY || 'true' }}
+          LAST_SIGNIN_DATE: ${{ vars.LAST_SIGNIN_DATE }}
+        run: |
+          EXTRA_FLAGS=""
+          if [ "${{ inputs.force }}" = "true" ]; then
+            echo "Manual execution detected — forcing run."
+            EXTRA_FLAGS="--force"
+          fi
+
+          python main.py --config-source env $EXTRA_FLAGS
+
+      - name: Update Repository Variables (Zero-Commit State)
+        if: always() && steps.run_sign.outputs.executed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Only persist today's date on full success so later scheduled runs
+          # retry profiles that failed earlier in the day.
+          if [ "${{ steps.run_sign.outputs.run_status }}" = "SUCCESS" ]; then
+            gh variable set LAST_SIGNIN_DATE --body "${{ steps.run_sign.outputs.today_date }}"
+          fi
+          gh variable set LAST_RUN_STATUS --body "${{ steps.run_sign.outputs.run_status }}"
