@@ -1,11 +1,12 @@
 """Tests for the token refresh mechanism: refresh is a 401 handler.
 
-SK_TOKEN_CACHE_KEY is assumed valid. When the server rejects it (HTTP 401 or
-business code 10000), the token is refreshed once and the request is retried
-with the fresh token. A failed refresh means SK_OAUTH_CRED_KEY has expired or
-changed (the profile fails); a refresh that succeeds but still gets rejected
-means both keys are out of sync. Refreshed tokens are persisted back into
-config.json when it exists.
+SK_TOKEN_CACHE_KEY is optional. When it is missing, the request goes straight
+to a refresh; when the server rejects it (HTTP 401 or business code 10000),
+the token is refreshed once and the request is retried with the fresh token.
+A failed refresh means SK_OAUTH_CRED_KEY has expired or changed (the profile
+fails); a refresh that succeeds but still gets rejected means both keys are
+out of sync. Refreshed tokens are persisted back into config.json when it
+exists.
 
 Run with:  python -m unittest discover -s tests -v
 Also runs under pytest.
@@ -226,6 +227,46 @@ class RefreshMechanismTest(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIn('Skip: Missing configuration credentials.', msg)
         refresh.assert_not_called()
+
+    def test_missing_token_refreshes_before_first_request(self):
+        """No cached token -> refresh via oauth cred, then GET and POST."""
+        profile = main.Profile.from_dict({
+            'SK_OAUTH_CRED_KEY': 'oauth-value-7f2a',
+            'gameId': '123',
+            'accountName': 'Player1',
+        }, 0)
+        urlopen = scripted_urlopen([
+            FakeResponse({'code': 0, 'message': 'OK',
+                          'data': {'calendar': [], 'hasToday': False}}),
+            FakeResponse({'code': 0, 'message': 'OK'}),
+        ])
+        with mock.patch.object(main.urllib.request, 'urlopen', urlopen), \
+                mock.patch.object(main, 'refresh_cache_token',
+                                  return_value='fresh-token') as refresh, \
+                mock.patch.object(main, 'persist_refreshed_token') as persist:
+            msg, ok, _ = main.checkin_flow(profile, 0, '')
+
+        self.assertTrue(ok)
+        self.assertIn('Check-in completed', msg)
+        refresh.assert_called_once_with(profile)
+        persist.assert_called_once_with(profile, 'fresh-token')
+
+    def test_missing_token_refresh_failure_blames_oauth_cred(self):
+        """Refresh failing with no cached token never says 'Token expired'."""
+        profile = main.Profile.from_dict({
+            'SK_OAUTH_CRED_KEY': 'oauth-value-7f2a',
+            'gameId': '123',
+        }, 0)
+        urlopen = scripted_urlopen([])
+        with mock.patch.object(main.urllib.request, 'urlopen', urlopen), \
+                mock.patch.object(main, 'refresh_cache_token',
+                                  side_effect=RuntimeError('Refresh HTTP 400: nope')):
+            msg, ok, _ = main.checkin_flow(profile, 0, '')
+
+        self.assertFalse(ok)
+        self.assertIn('SK_OAUTH_CRED_KEY', msg)
+        self.assertNotIn('Token expired', msg)
+        self.assertIn('Re-copy SK_OAUTH_CRED_KEY', msg)
 
     def test_already_signed_in_skips_post(self):
         """hasToday -> no POST is attempted at all."""

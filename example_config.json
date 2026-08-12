@@ -2,7 +2,7 @@
     "profiles": [
         {
             "SK_OAUTH_CRED_KEY": "REPLACE_ME",
-            "SK_TOKEN_CACHE_KEY": "REPLACE_ME",
+            "SK_TOKEN_CACHE_KEY": "",
             "gameId": "REPLACE_ME",
             "server": "2",
             "language": "en",

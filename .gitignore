@@ -1,6 +1,9 @@
 # secrets
 config.json
 
+# reference js vendor code
+references/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

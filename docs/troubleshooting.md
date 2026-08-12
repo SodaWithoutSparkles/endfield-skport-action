@@ -2,15 +2,21 @@
 
 ## Messages and their meaning
 
-### `⚠️ Token expired! Please update SK_TOKEN_CACHE_KEY in your config.`
+### `Token expired` / `out of sync` (code `10000`)
 
-The server rejected `SK_TOKEN_CACHE_KEY` (response code `10000`).
+The server rejected `SK_TOKEN_CACHE_KEY` (response code `10000`). The script
+refreshes it automatically via `SK_OAUTH_CRED_KEY`, so you normally never see
+this. It surfaces only when the refresh path itself fails:
 
-**Fix:** Re-copy `SK_TOKEN_CACHE_KEY` from Local Storage (see [setup.md](setup.md#finding-your-keys-devtools)). If the value in DevTools is identical, log out and back in on game.skport.com, then copy the new value. Update it in `config.json` and/or the `SKPORT_PROFILES_JSON` secret.
+- **`refresh failed`** → `SK_OAUTH_CRED_KEY` has expired or changed: log out
+  and back in on game.skport.com, then re-copy it (and the token) from DevTools.
+- **`out of sync`** → the refresh succeeded but the request was rejected again:
+  `SK_OAUTH_CRED_KEY` and `SK_TOKEN_CACHE_KEY` don't belong to the same
+  session. Re-copy **both** from Local Storage (see [setup.md](setup.md#finding-your-keys-devtools)).
 
 ### `Check-in failed for ... HTTP Error 4xx`
 
-- `403` / `401` → usually a wrong or expired credential (see above), or a wrong `id` / `server` combination
+- `403` / `401` → usually a wrong or expired credential (see above), or a wrong `gameId` / `server` combination
 - `429` → rate-limited; the next scheduled run (6 h later) will retry automatically
 
 ### `Check-in failed for ... Network Error`
@@ -27,7 +33,7 @@ The API returned a non-JSON body (often a gateway error page). Retry on the next
 
 ### `[Profile N] Skip: Missing configuration credentials.`
 
-The profile is missing `SK_OAUTH_CRED_KEY`, `SK_TOKEN_CACHE_KEY`, or `id` (or they still contain `REPLACE_ME`). Fix the profile and re-run.
+The profile is missing `SK_OAUTH_CRED_KEY` or `gameId` (or they still contain `REPLACE_ME`). `SK_TOKEN_CACHE_KEY` is optional — the script refreshes it automatically. Fix the profile and re-run.
 
 ### `discord_notify is enabled but no webhook URL is configured; notifications disabled.`
 

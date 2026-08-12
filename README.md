@@ -6,7 +6,8 @@ Automated daily check-in for **Arknights: Endfield** via [skport.com](https://ga
 
 - ✅ **One-click daily sign-in** — runs the same attendance call the website makes
 - 🔁 **Duplicate-safe** — checks the server calendar before signing; never double-signs
-- 🐍 **Zero dependencies** — pure Python 3.10+ standard library, no `pip install`
+- � **Self-healing tokens** — refreshes `SK_TOKEN_CACHE_KEY` automatically via `SK_OAUTH_CRED_KEY`; the token itself is optional
+- �🐍 **Zero dependencies** — pure Python 3.10+ standard library, no `pip install`
 - 🔔 **Discord notifications** — per-profile results (with optional `@mention`)
 - 🏃 **CI-ready** — ships with a GitHub Actions workflow that runs 4×/day
 - 🛡️ **Security-aware** — credentials are git-ignored and redacted from logs
@@ -31,7 +32,7 @@ python main.py --config-source both
 
 ## Getting your keys (DevTools)
 
-The script needs two per-account credential values that skport stores in your browser's **Local Storage** for `https://game.skport.com`:
+The script needs the per-account `SK_OAUTH_CRED_KEY` credential that skport stores in your browser for `https://game.skport.com`. `SK_TOKEN_CACHE_KEY` is **optional** — a session token the script refreshes automatically when missing or expired:
 
 | Key                  | What it is                                      |
 | -------------------- | ----------------------------------------------- |
@@ -46,7 +47,7 @@ The script needs two per-account credential values that skport stores in your br
 
 ![Local Storage panel with SK_OAUTH_CRED_KEY and SK_TOKEN_CACHE_KEY](assets/storage.png)
 
-You should see rows named `SK_OAUTH_CRED_KEY` and `SK_TOKEN_CACHE_KEY`. Copy **both values** — they never expire on the website side while you stay logged in.
+You should see rows named `SK_OAUTH_CRED_KEY` and `SK_TOKEN_CACHE_KEY`. Copy `SK_OAUTH_CRED_KEY` — it never expires on the website side while you stay logged in. `SK_TOKEN_CACHE_KEY` is optional: leave it out and the script refreshes it on every run.
 
 > 💡 **Using this with the GitHub Action?** Your game ID and server can be read from the `sk-game-role` request header in DevTools → **Network** (it has the format `3_{gameId}_{server}`), shown below:
 
@@ -58,17 +59,17 @@ Full walkthroughs: [docs/setup.md](docs/setup.md)
 
 ### Profiles (one per game account)
 
-| Field                | Required | Default      | Description                                    |
-| -------------------- | -------- | ------------ | ---------------------------------------------- |
-| `SK_OAUTH_CRED_KEY`  | ✅        | —            | From Local Storage (see above)                 |
-| `SK_TOKEN_CACHE_KEY` | ✅        | —            | From Local Storage (see above)                 |
-| `gameId`             | ✅        | —            | Game role ID (from the `sk-game-role` header)  |
-| `server`             | —        | `2`          | Server ID (second segment of `sk-game-role`)   |
-| `language`           | —        | `en`         | `sk-language` header value                     |
-| `accountName`        | —        | `Account N`  | Display name used in messages                  |
-| `myDiscordID`        | —        | global value | Discord user ID to `@mention` in notifications |
+| Field                | Required | Default       | Description                                                                                       |
+| -------------------- | -------- | ------------- | ------------------------------------------------------------------------------------------------- |
+| `SK_OAUTH_CRED_KEY`  | ✅        | —             | From Local Storage (see above)                                                                    |
+| `SK_TOKEN_CACHE_KEY` | —        | *(refreshed)* | Session token; optional — refreshed automatically via `SK_OAUTH_CRED_KEY` when missing or expired |
+| `gameId`             | ✅        | —             | Game role ID (from the `sk-game-role` header)                                                     |
+| `server`             | —        | `2`           | Server ID (second segment of `sk-game-role`)                                                      |
+| `language`           | —        | `en`          | `sk-language` header value                                                                        |
+| `accountName`        | —        | `Account N`   | Display name used in messages                                                                     |
+| `myDiscordID`        | —        | global value  | Discord user ID to `@mention` in notifications                                                    |
 
-> 💡 `SK_TOKEN_CACHE_KEY` is assumed valid; the script **refreshes it automatically when the server rejects it** (HTTP 401), using `SK_OAUTH_CRED_KEY` as the durable credential. When `config.json` is present, the fresh token is written back to it. If a refresh ever fails, the oauth credential has expired — re-copy both keys from DevTools.
+> 💡 `SK_TOKEN_CACHE_KEY` is optional. The script treats it as a cache: when it's missing or the server rejects it (HTTP 401 / code `10000`), it is **refreshed automatically** via `SK_OAUTH_CRED_KEY` (the durable credential). When `config.json` is present, the fresh token is written back to it. If a refresh ever fails, the oauth credential has expired or changed — re-copy it from DevTools.
 
 ### Global settings
 

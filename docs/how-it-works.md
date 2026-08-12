@@ -11,7 +11,7 @@ main()
  └─ for each profile:
      └─ checkin_flow(profile)
          ├─ check_attendence_status()   # GET attendance calendar
-         │    └─ _request_with_refresh()  # 401 → refresh token once, retry
+         │    └─ _request_with_refresh()  # missing token / 401 → refresh once, retry
          │         └─ refresh_cache_token() + persist_refreshed_token()
          ├─ (skip if already signed in today)
          └─ do_checkin()                # POST check-in (same 401 handler)
@@ -47,17 +47,19 @@ The token is `SK_TOKEN_CACHE_KEY`; the timestamp must be fresh (Unix seconds), w
 
 ## The check-in flow (refresh-on-401, fail-closed)
 
-`SK_TOKEN_CACHE_KEY` is assumed valid. Refreshing it is strictly a **401
-handler** inside `_request_with_refresh()`:
+`SK_TOKEN_CACHE_KEY` is **optional** — a cache, not a credential. Refreshing
+happens inside `_request_with_refresh()`:
 
-1. **GET** the attendance calendar with the current token → the server returns
+1. **No cached token** → skip straight to the refresh (step 3). This is the
+   `SK_OAUTH_CRED_KEY`-only setup.
+2. **GET** the attendance calendar with the current token → the server returns
    `data.hasToday` and the list of claimed days. If `hasToday` is true →
    **skip the POST**, report "already checked in" (success).
-2. If the server rejects the token (**HTTP 401** or code `10000`) → refresh
+3. If the server rejects the token (**HTTP 401** or code `10000`) → refresh
    `SK_TOKEN_CACHE_KEY` via `SK_OAUTH_CRED_KEY` (the durable credential) and
    **retry the request once** with the fresh token. The fresh token is written
    back to `config.json` (when present) and reused by the POST.
-3. Otherwise **POST** the check-in → success is `message == "OK"`.
+4. Otherwise **POST** the check-in → success is `message == "OK"`.
 
 A **failed refresh** means `SK_OAUTH_CRED_KEY` has expired or changed: the
 profile fails and the message tells you to re-copy both keys from DevTools. A

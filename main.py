@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 import time
+from typing import Optional
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -85,7 +86,8 @@ def write_gh_output(key: str, value: str):
 def generate_sign(path: str, method: str, headers: dict, query: str, body: str, token: str) -> str:
     """Skport signature: HMAC-SHA256 over path + query/body + timestamp +
     compact JSON of {platform, timestamp, dId, vName}, then MD5 of the hex digest."""
-    string_to_sign = path + ((query or "") if method == "GET" else (body or ""))
+    string_to_sign = path + ((query or "") if method ==
+                             "GET" else (body or ""))
     if "timestamp" in headers:
         string_to_sign += str(headers["timestamp"])
 
@@ -95,7 +97,8 @@ def generate_sign(path: str, method: str, headers: dict, query: str, body: str, 
     string_to_sign += json.dumps(header_obj, separators=(',', ':'))
 
     key = token.encode('utf-8') if isinstance(token, str) else token
-    hmac_hex = hmac.new(key, string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
+    hmac_hex = hmac.new(key, string_to_sign.encode(
+        'utf-8'), hashlib.sha256).hexdigest()
     return hashlib.md5(hmac_hex.encode('utf-8')).hexdigest()
 
 
@@ -232,7 +235,8 @@ def _request_json(profile: Profile, method: str, token: str, path: str = ENDFIEL
 
 def refresh_cache_token(profile: Profile) -> str:
     """GETs a fresh token; raises RuntimeError on any failure."""
-    response_json, error = _request_json(profile, 'GET', profile.token, path=REFRESH_PATH)
+    response_json, error = _request_json(
+        profile, 'GET', profile.token, path=REFRESH_PATH)
     if error:
         raise RuntimeError(f"Refresh failed: {error.message}")
     if response_json.get("code") != 0:
@@ -241,7 +245,8 @@ def refresh_cache_token(profile: Profile) -> str:
             f"message={response_json.get('message') or response_json.get('msg')}")
     token = (response_json.get("data") or {}).get("token")
     if not token:
-        raise RuntimeError(f"Refresh succeeded but no token was returned: {response_json!r}")
+        raise RuntimeError(
+            f"Refresh succeeded but no token was returned: {response_json!r}")
     logger.info("Successfully refreshed SK_TOKEN_CACHE_KEY")
     return token
 
@@ -286,42 +291,54 @@ def _server_error(response_json: dict) -> RequestError | None:
     code = response_json.get("code")
     if code in KNOWN_CODES:
         return RequestError(message=KNOWN_CODES[code], code=code)
-    msg = response_json.get("message") or response_json.get("msg") or "Unknown status"
+    msg = response_json.get("message") or response_json.get(
+        "msg") or "Unknown status"
     return None if msg == "OK" else RequestError(message=msg, code=code)
 
 
-def _request_with_refresh(profile: Profile, method: str, token: str) -> tuple[dict | None, RequestError | None, str]:
-    """Performs the request, treating the cache token as valid.
-
-    A rejection (HTTP 401 or business code 10000) triggers a one-shot refresh
-    and retry; the refreshed token is persisted to config.json and threaded
-    through the return value so subsequent requests reuse it. A failed refresh
-    means SK_OAUTH_CRED_KEY has expired or changed; a refresh that still gets
-    rejected means the two keys are out of sync — both tell the user to
-    re-copy both keys from DevTools.
-
-    Returns (response_json, error, token).
+def _request_with_refresh(profile: Profile, method: str, token: Optional[str]) -> tuple[dict | None, RequestError | None, str]:
     """
-    response_json, error = _request_json(profile, method, token)
-    if not _token_expired(error, response_json):
-        return response_json, error, token
+    Performs a request, refreshing the token once if the server rejects it.
+    Args:
+        profile: The Profile to use for the request.
+        method: 'GET' or 'POST'.
+        token: The current SK_TOKEN_CACHE_KEY; may be None or empty, in which case a refresh is attempted immediately.
+    Returns:
+        (response_json, error, token)
+    where one of response_json or error is None, and token is the latest SK_TOKEN_CACHE_KEY.
+    """
+    no_token = _is_unset(token)
+    if no_token:
+        logger.info(
+            "No SK_TOKEN_CACHE_KEY configured; refreshing via SK_OAUTH_CRED_KEY")
+    else:
+        response_json, error = _request_json(profile, method, token)
+        if not _token_expired(error, response_json):
+            return response_json, error, token
+        logger.info(
+            "Token expired (HTTP 401 or code 10000); refreshing SK_TOKEN_CACHE_KEY")
 
-    logger.info(
-        "Token expired (HTTP 401 or code 10000); refreshing SK_TOKEN_CACHE_KEY")
     try:
         new_token = refresh_cache_token(profile)
     except RuntimeError as e:
         details = _sanitize(
             str(e), (profile.oauth_cred, profile.token, profile.game_id))
         details_suffix = f" Details: {details}" if details else ""
+        prefix = ("No token configured and refresh failed" if no_token
+                  else "Token expired and refresh failed")
+        advice = ("Re-copy SK_OAUTH_CRED_KEY from DevTools." if no_token
+                  else "Re-copy both keys from DevTools.")
         return None, RequestError(
-            "Token expired and refresh failed — SK_OAUTH_CRED_KEY has expired or "
-            f"changed. Re-copy both keys from DevTools.{details_suffix}"
+            f"{prefix} — SK_OAUTH_CRED_KEY has expired or changed. {advice}"
+            f"{details_suffix}"
         ), token
 
     persist_refreshed_token(profile, new_token)
 
-    logger.info("Retrying request with refreshed token")
+    if no_token:
+        logger.info("Proceeding with refreshed token")
+    else:
+        logger.info("Retrying request with refreshed token")
     response_json, error = _request_json(profile, method, new_token)
     if _token_expired(error, response_json):
         return None, RequestError(
@@ -376,12 +393,14 @@ def checkin_flow(profile: Profile, index: int, global_discord_id: str) -> tuple[
     Fails closed: a failed status check aborts the check-in, mirroring normal
     user behaviour (never POST twice in one day).
 
-    Return: (message, success, discord_id).
+    Returns:
+        Tuple of (message, success, discord_id).
     """
     my_discord_id = profile.discord_id or global_discord_id
 
     # Missing credentials is a config gap: skip without failing the run.
-    if _is_unset(profile.oauth_cred) or _is_unset(profile.token) or _is_unset(profile.game_id):
+    # SK_TOKEN_CACHE_KEY is optional — it is refreshed via SK_OAUTH_CRED_KEY.
+    if _is_unset(profile.oauth_cred) or _is_unset(profile.game_id):
         return f"[Profile {index + 1}] Skip: Missing configuration credentials.", True, my_discord_id
 
     already_signed_in, days_done, status_error, token = check_attendance_status(
@@ -443,7 +462,8 @@ def _load_config_from_env() -> dict:
         try:
             profiles = json.loads(raw)
         except json.JSONDecodeError as e:
-            raise ValueError(f"SKPORT_PROFILES_JSON is not valid JSON: {e}") from e
+            raise ValueError(
+                f"SKPORT_PROFILES_JSON is not valid JSON: {e}") from e
     config = _normalize_config({"profiles": profiles})
     config.update({
         "discordNotify": os.getenv("DISCORD_NOTIFY", "true").lower() == "true",
@@ -523,7 +543,8 @@ def main():
     if not args.force and last_signin == today_utc:
         logger.info(
             f"Already completed sign-in for today ({today_utc}). Skipping execution.")
-        _gh_outputs(executed="false", run_status="SKIPPED", today_date=today_utc)
+        _gh_outputs(executed="false", run_status="SKIPPED",
+                    today_date=today_utc)
         return
 
     profiles = [Profile.from_dict(p, idx)

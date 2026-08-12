@@ -17,6 +17,9 @@ jobs:
     permissions:
       contents: read
       variables: write # Required for 'gh variable set' without git commits
+    environment: 
+      name: acc1
+      deployment: false
 
     steps:
       - name: Checkout Code
@@ -45,13 +48,20 @@ jobs:
           python main.py --config-source env $EXTRA_FLAGS
 
       - name: Update Repository Variables (Zero-Commit State)
-        if: always() && steps.run_sign.outputs.executed == 'true'
+        if: always() && !cancelled()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # The script writes run_status for every path (SUCCESS / FAILED /
+          # CONFIG_ERROR / SKIPPED), so LAST_RUN_STATUS always reflects the
+          # latest outcome. Guard against an empty value in case the script
+          # crashed before it could write its outputs.
+          RUN_STATUS="${{ steps.run_sign.outputs.run_status }}"
+          if [ -n "$RUN_STATUS" ]; then
+            gh variable set LAST_RUN_STATUS --body "$RUN_STATUS"
+          fi
           # Only persist today's date on full success so later scheduled runs
           # retry profiles that failed earlier in the day.
-          if [ "${{ steps.run_sign.outputs.run_status }}" = "SUCCESS" ]; then
+          if [ "$RUN_STATUS" = "SUCCESS" ]; then
             gh variable set LAST_SIGNIN_DATE --body "${{ steps.run_sign.outputs.today_date }}"
           fi
-          gh variable set LAST_RUN_STATUS --body "${{ steps.run_sign.outputs.run_status }}"

@@ -17,12 +17,12 @@ The workflow runs **4 times per day at 00:00, 06:00, 12:00, 18:00 UTC**. That's 
 
 ## Step-by-step
 
-| Step                          | What it does                                                                                                          |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `Checkout Code`               | Clones the repo                                                                                                       |
-| `Set up Python`               | Installs Python 3.11 (stdlib only, nothing else)                                                                      |
-| `Run Auto Sign Script`        | Runs `python main.py --config-source env [--force]` with secrets as env vars; writes step **outputs**                 |
-| `Update Repository Variables` | Persists run results into repo **variables** (`gh variable set`) so future runs remember them — no git commits needed |
+| Step                          | What it does                                                                                          |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `Checkout Code`               | Clones the repo                                                                                       |
+| `Set up Python`               | Installs Python 3.11 (stdlib only, nothing else)                                                      |
+| `Run Auto Sign Script`        | Runs `python main.py --config-source env [--force]` with secrets as env vars; writes step **outputs** |
+| `Update Repository Variables` | Persists run results into repo **variables** (`gh variable set`) — no git commits needed              |
 
 ### Manual runs (`workflow_dispatch`)
 
@@ -52,10 +52,10 @@ The script writes these outputs (via `GITHUB_OUTPUT`):
 
 The workflow uses repository **variables** (Settings → Secrets and variables → Actions → Variables) as its "database":
 
-| Variable           | Written when                      | Purpose                                   |
-| ------------------ | --------------------------------- | ----------------------------------------- |
-| `LAST_SIGNIN_DATE` | Only when `run_status == SUCCESS` | Same-day dedup across scheduled runs      |
-| `LAST_RUN_STATUS`  | Every executed run                | Last known outcome (`SUCCESS` / `FAILED`) |
+| Variable           | Written when                                                                          | Purpose                              |
+| ------------------ | ------------------------------------------------------------------------------------- | ------------------------------------ |
+| `LAST_SIGNIN_DATE` | Only when `run_status == SUCCESS`                                                     | Same-day dedup across scheduled runs |
+| `LAST_RUN_STATUS`  | Every run that reaches the script (`SUCCESS` / `FAILED` / `CONFIG_ERROR` / `SKIPPED`) | Last known outcome                   |
 
 ### Why `LAST_SIGNIN_DATE` is only written on SUCCESS
 
@@ -68,13 +68,24 @@ At the start of a run, the script compares `LAST_SIGNIN_DATE` (passed via `vars.
 - **match** → log "Already completed sign-in for today", write `executed=false` / `run_status=SKIPPED`, exit 0 (Discord is not notified — the successful run earlier already sent one)
 - **no match** → run normally
 
+### Token refresh in CI
+
+`SK_TOKEN_CACHE_KEY` is **optional** in `SKPORT_PROFILES_JSON`. The runner
+checks out a clean copy of the repository — `config.json` is git-ignored and
+never exists there — so a refreshed token is never written back in CI (the
+script's local persist is a silent no-op). Instead, each run that starts
+without a valid token performs one `/web/v1/auth/refresh` via
+`SK_OAUTH_CRED_KEY` and uses the fresh token in memory for the rest of the
+run. Every run refreshes independently, which is why omitting the token is
+safe: the oauth credential is the only durable secret.
+
 ## Failure behavior
 
-| Situation                             | Script exit code | Workflow effect                                                                   |
-| ------------------------------------- | ---------------- | --------------------------------------------------------------------------------- |
-| All profiles succeeded                | `0`              | Variables updated, run green                                                      |
-| Any profile failed                    | `1`              | Variables updated (`LAST_RUN_STATUS=FAILED`), run red, next scheduled run retries |
-| Config error (no profiles / bad JSON) | `1`              | `run_status=CONFIG_ERROR`, no variables written                                   |
-| Same-day skip                         | `0`              | `run_status=SKIPPED`, no variables written                                        |
+| Situation                             | Script exit code | Workflow effect                                                 |
+| ------------------------------------- | ---------------- | --------------------------------------------------------------- |
+| All profiles succeeded                | `0`              | `LAST_RUN_STATUS=SUCCESS` and `LAST_SIGNIN_DATE` set, run green |
+| Any profile failed                    | `1`              | `LAST_RUN_STATUS=FAILED`, run red, next scheduled run retries   |
+| Config error (no profiles / bad JSON) | `1`              | `LAST_RUN_STATUS=CONFIG_ERROR`, `LAST_SIGNIN_DATE` untouched    |
+| Same-day skip                         | `0`              | `LAST_RUN_STATUS=SKIPPED`, `LAST_SIGNIN_DATE` untouched         |
 
 **Note:** a failed run shows red in the Actions tab on purpose — that's the signal to look at the logs or the Discord message.
