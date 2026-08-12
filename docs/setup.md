@@ -107,12 +107,13 @@ The script's server-side check prevents double sign-ins, so extra runs are safe.
 
 In your repository go to **Settings → Secrets and variables → Actions → Secrets** and add:
 
-| Secret                 | Value                                                                      |
-| ---------------------- | -------------------------------------------------------------------------- |
-| `SKPORT_PROFILES_JSON` | A JSON array of your profiles (see below)                                  |
-| `DISCORD_WEBHOOK`      | Your Discord webhook URL (optional — leave unset to disable notifications) |
-| `MY_DISCORD_ID`        | Your Discord user ID for `@mention`s (optional)                            |
-| `DISCORD_NOTIFY`       | `"true"` (default when unset) or `"false"`                                 |
+| Secret                             | Value                                                                      |
+| ---------------------------------- | -------------------------------------------------------------------------- |
+| `SKPORT_PROFILES_JSON`             | A JSON array of your profiles (see below)                                  |
+| `DISCORD_WEBHOOK`                  | Your Discord webhook URL (optional — leave unset to disable notifications) |
+| `MY_DISCORD_ID`                    | Your Discord user ID for `@mention`s (optional)                            |
+| `DISCORD_NOTIFY`                   | `"true"` (default when unset) or `"false"`                                 |
+| `DISCORD_NOTIFY_ALREADY_SIGNED_IN` | `"true"` (default) or `"false"`                                            |
 
 `SKPORT_PROFILES_JSON` is a single-line JSON array. For one account:
 
@@ -154,13 +155,14 @@ Endfield: ✅ ...
 
 Every `config.json` key has an environment variable equivalent. `--config-source` selects the source(s):
 
-| Config key       | Env var                | Notes                                         |
-| ---------------- | ---------------------- | --------------------------------------------- |
-| `profiles`       | `SKPORT_PROFILES_JSON` | JSON array of profile objects                 |
-| `discordNotify`  | `DISCORD_NOTIFY`       | `"true"` / `"false"`                          |
-| `myDiscordID`    | `MY_DISCORD_ID`        |                                               |
-| `discordWebhook` | `DISCORD_WEBHOOK`      |                                               |
-| `lastSigninDate` | `LAST_SIGNIN_DATE`     | **Actions only** — not read from JSON configs |
+| Config key                     | Env var                            | Notes                                         |
+| ------------------------------ | ---------------------------------- | --------------------------------------------- |
+| `profiles`                     | `SKPORT_PROFILES_JSON`             | JSON array of profile objects                 |
+| `discordNotify`                | `DISCORD_NOTIFY`                   | `"true"` / `"false"`                          |
+| `discordNotifyAlreadySignedIn` | `DISCORD_NOTIFY_ALREADY_SIGNED_IN` | `"true"` (default) / `"false"`                |
+| `myDiscordID`                  | `MY_DISCORD_ID`                    |                                               |
+| `discordWebhook`               | `DISCORD_WEBHOOK`                  |                                               |
+| `lastSigninDate`               | `LAST_SIGNIN_DATE`                 | **Actions only** — not read from JSON configs |
 
 ```bash
 SKPORT_PROFILES_JSON='[{"SK_OAUTH_CRED_KEY":"...","gameId":"...","server":"2"}]' \

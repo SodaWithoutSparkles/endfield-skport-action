@@ -73,12 +73,13 @@ Full walkthroughs: [docs/setup.md](docs/setup.md)
 
 ### Global settings
 
-| Key              | Default | Description                                                                       |
-| ---------------- | ------- | --------------------------------------------------------------------------------- |
-| `discordNotify`  | `true`  | Send results to Discord. Automatically disabled when no webhook is configured     |
-| `discordWebhook` | —       | Discord webhook URL (keep empty to disable)                                       |
-| `myDiscordID`    | —       | Default Discord user ID for all profiles                                          |
-| `lastSigninDate` | —       | **Actions only** — managed automatically by the workflow; ignored in JSON configs |
+| Key                            | Default | Description                                                                            |
+| ------------------------------ | ------- | -------------------------------------------------------------------------------------- |
+| `discordNotify`                | `true`  | Send results to Discord. Automatically disabled when no webhook is configured          |
+| `discordNotifyAlreadySignedIn` | `true`  | Also send "already checked in" notices; `false` only notifies on check-in and failures |
+| `discordWebhook`               | —       | Discord webhook URL (keep empty to disable)                                            |
+| `myDiscordID`                  | —       | Default Discord user ID for all profiles                                               |
+| `lastSigninDate`               | —       | **Actions only** — set via `LAST_SIGNIN_DATE`; ignored in JSON configs                 |
 
 Use `REPLACE_ME` as a placeholder for anything you haven't set yet — it is treated as "not configured".
 

@@ -37,6 +37,7 @@ jobs:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           MY_DISCORD_ID: ${{ secrets.MY_DISCORD_ID }}
           DISCORD_NOTIFY: ${{ secrets.DISCORD_NOTIFY || 'true' }}
+          DISCORD_NOTIFY_ALREADY_SIGNED_IN: ${{ secrets.DISCORD_NOTIFY_ALREADY_SIGNED_IN || 'false' }}
           LAST_SIGNIN_DATE: ${{ vars.LAST_SIGNIN_DATE }}
         run: |
           EXTRA_FLAGS=""

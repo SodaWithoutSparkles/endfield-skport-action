@@ -106,7 +106,8 @@ class NotifyUserTest(unittest.TestCase):
         """The mention is added by notify_user, not by the flow messages."""
         captured, fake = capture_urlopen()
         results = [
-            ("Check-in completed for Player1\nEndfield: OK", True, "12345")]
+            main.CheckinResult("Check-in completed for Player1\nEndfield: OK",
+                               main.ResultState.CHECKED_IN, "12345")]
         with mock.patch.object(main.urllib.request, 'urlopen', fake):
             main.notify_user(WEBHOOK, results)
         self.assertEqual(
@@ -116,7 +117,8 @@ class NotifyUserTest(unittest.TestCase):
     def test_no_ping_when_id_unset(self):
         captured, fake = capture_urlopen()
         results = [
-            ("Check-in completed for Player1\nEndfield: OK", True, "REPLACE_ME")]
+            main.CheckinResult("Check-in completed for Player1\nEndfield: OK",
+                               main.ResultState.CHECKED_IN, "REPLACE_ME")]
         with mock.patch.object(main.urllib.request, 'urlopen', fake):
             main.notify_user(WEBHOOK, results)
         self.assertEqual(
@@ -127,7 +129,9 @@ class NotifyUserTest(unittest.TestCase):
         """Skip-style messages have no mention target; leave them untouched."""
         captured, fake = capture_urlopen()
         results = [
-            ("[Profile 1] Skip: Missing configuration credentials.", True, "12345")]
+            main.CheckinResult(
+                "[Profile 1] Skip: Missing configuration credentials.",
+                main.ResultState.SKIPPED, "12345")]
         with mock.patch.object(main.urllib.request, 'urlopen', fake):
             main.notify_user(WEBHOOK, results)
         self.assertEqual(
@@ -137,8 +141,10 @@ class NotifyUserTest(unittest.TestCase):
     def test_multiple_results_joined_with_individual_pings(self):
         captured, fake = capture_urlopen()
         results = [
-            ("Check-in completed for A\nEndfield: OK", True, "1"),
-            ("Check-in completed for B\nEndfield: OK", True, ""),
+            main.CheckinResult("Check-in completed for A\nEndfield: OK",
+                               main.ResultState.CHECKED_IN, "1"),
+            main.CheckinResult("Check-in completed for B\nEndfield: OK",
+                               main.ResultState.CHECKED_IN, ""),
         ]
         with mock.patch.object(main.urllib.request, 'urlopen', fake):
             main.notify_user(WEBHOOK, results)
@@ -147,9 +153,31 @@ class NotifyUserTest(unittest.TestCase):
             "Check-in completed for A\nEndfield: <@1> OK\n\n"
             "Check-in completed for B\nEndfield: OK")
 
+    def test_already_signed_in_messages_filterable(self):
+        """notify_already_signed_in=False drops 'already signed in' results."""
+        captured, fake = capture_urlopen()
+        results = [
+            main.CheckinResult("Check-in completed for A\nEndfield: OK",
+                               main.ResultState.CHECKED_IN, ""),
+            main.CheckinResult("Check-in skipped for B — already signed in today "
+                               "(3 days claimed)\nEndfield: ✅ Already checked in today.",
+                               main.ResultState.ALREADY_SIGNED_IN, ""),
+        ]
+        with mock.patch.object(main.urllib.request, 'urlopen', fake):
+            main.notify_user(WEBHOOK, results, notify_already_signed_in=False)
+        self.assertEqual(
+            captured['payload']['content'],
+            "Check-in completed for A\nEndfield: OK")
+        # Default keeps the already-signed-in message.
+        with mock.patch.object(main.urllib.request, 'urlopen', fake):
+            main.notify_user(WEBHOOK, results)
+        self.assertIn('already signed in today',
+                      captured['payload']['content'])
+
     def test_unset_webhook_is_noop(self):
         with mock.patch.object(main.urllib.request, 'urlopen') as urlopen:
-            main.notify_user('', [("x", True, "1")])
+            main.notify_user(
+                '', [main.CheckinResult("x", main.ResultState.CHECKED_IN, "1")])
         urlopen.assert_not_called()
 
 

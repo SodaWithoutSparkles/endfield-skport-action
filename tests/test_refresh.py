@@ -94,11 +94,11 @@ class RefreshMechanismTest(unittest.TestCase):
                 mock.patch.object(main, 'refresh_cache_token',
                                   return_value='fresh-token') as refresh, \
                 mock.patch.object(main, 'persist_refreshed_token') as persist:
-            msg, ok, _ = main.checkin_flow(self.profile, 0, '')
+            result = main.checkin_flow(self.profile, 0, '')
 
-        self.assertFalse(ok)
-        self.assertIn('out of sync', msg)
-        self.assertIn('SK_OAUTH_CRED_KEY', msg)
+        self.assertFalse(result.success)
+        self.assertIn('out of sync', result.message)
+        self.assertIn('SK_OAUTH_CRED_KEY', result.message)
         # Exactly one refresh attempt, then the failure propagates.
         refresh.assert_called_once_with(self.profile)
         persist.assert_called_once_with(self.profile, 'fresh-token')
@@ -112,10 +112,10 @@ class RefreshMechanismTest(unittest.TestCase):
         with mock.patch.object(main.urllib.request, 'urlopen', urlopen), \
                 mock.patch.object(main, 'refresh_cache_token',
                                   return_value='fresh-token') as refresh:
-            msg, ok, _ = main.checkin_flow(self.profile, 0, '')
+            result = main.checkin_flow(self.profile, 0, '')
 
-        self.assertFalse(ok)
-        self.assertIn('out of sync', msg)
+        self.assertFalse(result.success)
+        self.assertIn('out of sync', result.message)
         refresh.assert_called_once_with(self.profile)
 
     def test_expired_refresh_success_then_checkin(self):
@@ -137,10 +137,10 @@ class RefreshMechanismTest(unittest.TestCase):
                 mock.patch.object(main, 'refresh_cache_token',
                                   return_value='fresh-token') as refresh, \
                 mock.patch.object(main, 'persist_refreshed_token') as persist:
-            msg, ok, _ = main.checkin_flow(self.profile, 0, '')
+            result = main.checkin_flow(self.profile, 0, '')
 
-        self.assertTrue(ok)
-        self.assertIn('Check-in completed', msg)
+        self.assertTrue(result.success)
+        self.assertIn('Check-in completed', result.message)
         # The refresh signs with the old token; GET and POST use the new one.
         self.assertEqual(
             signed, ['token-value-9c4b', 'fresh-token', 'fresh-token'])
@@ -158,10 +158,10 @@ class RefreshMechanismTest(unittest.TestCase):
         with mock.patch.object(main.urllib.request, 'urlopen', urlopen), \
                 mock.patch.object(main, 'refresh_cache_token',
                                   return_value='fresh-token') as refresh:
-            msg, ok, _ = main.checkin_flow(self.profile, 0, '')
+            result = main.checkin_flow(self.profile, 0, '')
 
-        self.assertTrue(ok)
-        self.assertIn('Check-in completed', msg)
+        self.assertTrue(result.success)
+        self.assertIn('Check-in completed', result.message)
         refresh.assert_called_once_with(self.profile)
 
     def test_refresh_failure_fails_profile(self):
@@ -170,12 +170,12 @@ class RefreshMechanismTest(unittest.TestCase):
         with mock.patch.object(main.urllib.request, 'urlopen', urlopen), \
                 mock.patch.object(main, 'refresh_cache_token',
                                   side_effect=RuntimeError('Refresh HTTP 400: nope')):
-            msg, ok, _ = main.checkin_flow(self.profile, 0, '')
+            result = main.checkin_flow(self.profile, 0, '')
 
-        self.assertFalse(ok)
-        self.assertIn('SK_OAUTH_CRED_KEY', msg)
-        self.assertIn('refresh failed', msg)
-        self.assertIn('Re-copy both keys', msg)
+        self.assertFalse(result.success)
+        self.assertIn('SK_OAUTH_CRED_KEY', result.message)
+        self.assertIn('refresh failed', result.message)
+        self.assertIn('Re-copy both keys', result.message)
 
     def test_refresh_failure_redacts_secrets(self):
         """Secret values never reach the message even when nested in errors."""
@@ -185,12 +185,12 @@ class RefreshMechanismTest(unittest.TestCase):
                                   side_effect=RuntimeError(
                                       'Refresh HTTP 400: cred=oauth-value-7f2a '
                                       'token=token-value-9c4b')):
-            msg, ok, _ = main.checkin_flow(self.profile, 0, '')
+            result = main.checkin_flow(self.profile, 0, '')
 
-        self.assertFalse(ok)
-        self.assertIn('[REDACTED]', msg)
-        self.assertNotIn('oauth-value-7f2a', msg)
-        self.assertNotIn('token-value-9c4b', msg)
+        self.assertFalse(result.success)
+        self.assertIn('[REDACTED]', result.message)
+        self.assertNotIn('oauth-value-7f2a', result.message)
+        self.assertNotIn('token-value-9c4b', result.message)
 
     def test_post_403_is_already_signed_in(self):
         """Status OK -> server rejects the duplicate POST with 403 -> success."""
@@ -200,21 +200,21 @@ class RefreshMechanismTest(unittest.TestCase):
             http_error(403),
         ])
         with mock.patch.object(main.urllib.request, 'urlopen', urlopen):
-            msg, ok, _ = main.checkin_flow(self.profile, 0, '')
+            result = main.checkin_flow(self.profile, 0, '')
 
-        self.assertTrue(ok)
-        self.assertIn('already signed in', msg)
+        self.assertTrue(result.success)
+        self.assertIn('already signed in', result.message)
 
     def test_get_403_still_fails_closed(self):
         """403 on the status GET is not 'already signed in' -> fail closed."""
         urlopen = scripted_urlopen([http_error(403)])
         with mock.patch.object(main.urllib.request, 'urlopen', urlopen):
-            msg, ok, _ = main.checkin_flow(self.profile, 0, '')
+            result = main.checkin_flow(self.profile, 0, '')
 
-        self.assertFalse(ok)
+        self.assertFalse(result.success)
         # Distinct prefix: the status check and the check-in report differently.
-        self.assertIn('Status check failed', msg)
-        self.assertNotIn('Check-in failed', msg)
+        self.assertIn('Status check failed', result.message)
+        self.assertNotIn('Check-in failed', result.message)
 
     def test_missing_credentials_skip_without_failure(self):
         """Unset secrets -> skip (success, not failure); no network call at all."""
@@ -222,10 +222,11 @@ class RefreshMechanismTest(unittest.TestCase):
         profile = main.Profile.from_dict({'gameId': '1'}, 1)
         with mock.patch.object(main.urllib.request, 'urlopen', urlopen), \
                 mock.patch.object(main, 'refresh_cache_token') as refresh:
-            msg, ok, _ = main.checkin_flow(profile, 1, '')
+            result = main.checkin_flow(profile, 1, '')
 
-        self.assertTrue(ok)
-        self.assertIn('Skip: Missing configuration credentials.', msg)
+        self.assertTrue(result.success)
+        self.assertIn('Skip: Missing configuration credentials.',
+                      result.message)
         refresh.assert_not_called()
 
     def test_missing_token_refreshes_before_first_request(self):
@@ -244,10 +245,10 @@ class RefreshMechanismTest(unittest.TestCase):
                 mock.patch.object(main, 'refresh_cache_token',
                                   return_value='fresh-token') as refresh, \
                 mock.patch.object(main, 'persist_refreshed_token') as persist:
-            msg, ok, _ = main.checkin_flow(profile, 0, '')
+            result = main.checkin_flow(profile, 0, '')
 
-        self.assertTrue(ok)
-        self.assertIn('Check-in completed', msg)
+        self.assertTrue(result.success)
+        self.assertIn('Check-in completed', result.message)
         refresh.assert_called_once_with(profile)
         persist.assert_called_once_with(profile, 'fresh-token')
 
@@ -261,12 +262,12 @@ class RefreshMechanismTest(unittest.TestCase):
         with mock.patch.object(main.urllib.request, 'urlopen', urlopen), \
                 mock.patch.object(main, 'refresh_cache_token',
                                   side_effect=RuntimeError('Refresh HTTP 400: nope')):
-            msg, ok, _ = main.checkin_flow(profile, 0, '')
+            result = main.checkin_flow(profile, 0, '')
 
-        self.assertFalse(ok)
-        self.assertIn('SK_OAUTH_CRED_KEY', msg)
-        self.assertNotIn('Token expired', msg)
-        self.assertIn('Re-copy SK_OAUTH_CRED_KEY', msg)
+        self.assertFalse(result.success)
+        self.assertIn('SK_OAUTH_CRED_KEY', result.message)
+        self.assertNotIn('Token expired', result.message)
+        self.assertIn('Re-copy SK_OAUTH_CRED_KEY', result.message)
 
     def test_already_signed_in_skips_post(self):
         """hasToday -> no POST is attempted at all."""
@@ -276,14 +277,14 @@ class RefreshMechanismTest(unittest.TestCase):
                                    'hasToday': True}}),
         ])
         with mock.patch.object(main.urllib.request, 'urlopen', urlopen):
-            msg, ok, discord_id = main.checkin_flow(self.profile, 0, '42')
+            result = main.checkin_flow(self.profile, 0, '42')
 
-        self.assertTrue(ok)
-        self.assertIn('2 days claimed', msg)
-        self.assertIn('already signed in', msg)
+        self.assertTrue(result.success)
+        self.assertIn('2 days claimed', result.message)
+        self.assertIn('already signed in', result.message)
         # The mention is resolved for Discord, but never lands in the log message.
-        self.assertEqual(discord_id, '42')
-        self.assertNotIn('<@', msg)
+        self.assertEqual(result.discord_id, '42')
+        self.assertNotIn('<@', result.message)
 
 
 class PersistRefreshedTokenTest(unittest.TestCase):

@@ -1,5 +1,6 @@
 import argparse
 import datetime
+from enum import Enum
 import hashlib
 import hmac
 import json
@@ -75,6 +76,29 @@ class Profile:
         )
 
 
+class ResultState(Enum):
+    """Outcome categories for a profile's check-in attempt."""
+
+    CHECKED_IN = "checked_in"
+    ALREADY_SIGNED_IN = "already_signed_in"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
+@dataclass
+class CheckinResult:
+    """Per-profile outcome: message, state, and Discord mention target."""
+
+    message: str
+    state: ResultState
+    discord_id: str = ""
+
+    @property
+    def success(self) -> bool:
+        """True unless the profile failed; skips count as success."""
+        return self.state is not ResultState.FAILED
+
+
 def write_gh_output(key: str, value: str):
     """Appends outputs to GITHUB_OUTPUT file for downstream GitHub Action steps."""
     gh_output = os.getenv('GITHUB_OUTPUT')
@@ -142,34 +166,40 @@ def post_webhook(webhook_url: str, data: str):
             f'Failed to send Discord notification: {_sanitize(str(err), (webhook_url,))}')
 
 
-def notify_user(webhook_url: str, results: list[tuple[str, bool, str]]) -> None:
+def notify_user(webhook_url: str, results: list[CheckinResult],
+                notify_already_signed_in: bool = True) -> None:
     """Sends per-profile results to Discord, attaching each profile's @mention.
 
     Mentions are attached only here — the messages main() logs never contain
-    Discord user IDs.
+    Discord user IDs. When notify_already_signed_in is False, "already signed
+    in today" results are dropped from the notification.
     """
     if _is_unset(webhook_url):
         return
 
     lines = []
-    for message, _, discord_id in results:
-        if discord_id and not _is_unset(discord_id) and "\nEndfield: " in message:
+    for result in results:
+        if result.state is ResultState.ALREADY_SIGNED_IN and not notify_already_signed_in:
+            continue
+        message = result.message
+        if result.discord_id and not _is_unset(result.discord_id) and "\nEndfield: " in message:
             message = message.replace(
-                "\nEndfield: ", f"\nEndfield: <@{discord_id}> ", 1)
+                "\nEndfield: ", f"\nEndfield: <@{result.discord_id}> ", 1)
         lines.append(message)
     post_webhook(webhook_url, "\n\n".join(lines))
 
 
-def _handle_error(account_name: str, error: RequestError, profile: Profile, action: str) -> tuple[str, bool]:
-    """Builds the failure message shared by the status check and check-in paths.
+def _handle_error(account_name: str, error: RequestError, profile: Profile, action: str) -> CheckinResult:
+    """Builds the failure result shared by the status check and check-in paths.
 
     `action` prefixes the message so a failed GET is distinguishable from a
-    failed POST. The Discord @mention is attached later by notify_user().
+    failed POST. The Discord @mention is attached later by the caller.
     """
     safe_text = _sanitize(
         error.message, (profile.oauth_cred, profile.token, profile.game_id,))
-    return (f"{action} failed for {account_name}\n"
-            f"Endfield: {safe_text}"), False
+    return CheckinResult(
+        f"{action} failed for {account_name}\n"
+        f"Endfield: {safe_text}", ResultState.FAILED)
 
 
 def _generate_headers(profile: Profile) -> dict:
@@ -370,54 +400,62 @@ def check_attendance_status(profile: Profile, token: str) -> tuple[bool | None, 
     return bool(data.get("hasToday", False)), days_done, None, token
 
 
-def do_checkin(profile: Profile, token: str) -> tuple[str, bool]:
-    """POSTs the check-in (a 401 refreshes the token once); returns (message, success)."""
+def do_checkin(profile: Profile, token: str) -> CheckinResult:
+    """POSTs the check-in (a 401 refreshes the token once); returns the result."""
     response_json, error, _ = _checked_request(profile, 'POST', token)
     # The server answers a duplicate claim with HTTP 403; treat it as success
     # so a race between the status check and the POST doesn't fail the run.
     if error is not None and error.status == 403:
-        return (f"Check-in skipped for {profile.account_name} — already signed in "
-                f"(server rejected the POST with HTTP 403)\n"
-                f"Endfield: ✅ Already checked in today."), True
+        return CheckinResult(
+            f"Check-in skipped for {profile.account_name} — already signed in "
+            f"(server rejected the POST with HTTP 403)\n"
+            f"Endfield: ✅ Already checked in today.", ResultState.ALREADY_SIGNED_IN)
     if error:
         return _handle_error(profile.account_name, error, profile, "Check-in")
 
     msg = response_json.get("message") or response_json.get("msg") or "OK"
-    return (f"Check-in completed for {profile.account_name}\n"
-            f"Endfield: {msg}"), True
+    return CheckinResult(
+        f"Check-in completed for {profile.account_name}\n"
+        f"Endfield: {msg}", ResultState.CHECKED_IN)
 
 
-def checkin_flow(profile: Profile, index: int, global_discord_id: str) -> tuple[str, bool, str]:
+def checkin_flow(profile: Profile, index: int, global_discord_id: str) -> CheckinResult:
     """Runs the check-in flow for one profile: status check, then POST if needed.
 
     Fails closed: a failed status check aborts the check-in, mirroring normal
     user behaviour (never POST twice in one day).
 
     Returns:
-        Tuple of (message, success, discord_id).
+        CheckinResult with the message, state, and Discord mention target.
     """
     my_discord_id = profile.discord_id or global_discord_id
 
     # Missing credentials is a config gap: skip without failing the run.
     # SK_TOKEN_CACHE_KEY is optional — it is refreshed via SK_OAUTH_CRED_KEY.
     if _is_unset(profile.oauth_cred) or _is_unset(profile.game_id):
-        return f"[Profile {index + 1}] Skip: Missing configuration credentials.", True, my_discord_id
+        return CheckinResult(
+            f"[Profile {index + 1}] Skip: Missing configuration credentials.",
+            ResultState.SKIPPED, my_discord_id)
 
     already_signed_in, days_done, status_error, token = check_attendance_status(
         profile, profile.token)
     if status_error:
-        msg, ok = _handle_error(
+        result = _handle_error(
             profile.account_name, status_error, profile, "Status check")
-        return msg, ok, my_discord_id
+        result.discord_id = my_discord_id
+        return result
     if already_signed_in:
         day_word = "day" if days_done == 1 else "days"
-        return (f"Check-in skipped for {profile.account_name} — already signed in today "
-                f"({days_done} {day_word} claimed)\n"
-                f"Endfield: ✅ Already checked in today."), True, my_discord_id
+        return CheckinResult(
+            f"Check-in skipped for {profile.account_name} — already signed in today "
+            f"({days_done} {day_word} claimed)\n"
+            f"Endfield: ✅ Already checked in today.",
+            ResultState.ALREADY_SIGNED_IN, my_discord_id)
 
     logger.debug(f"[Profile {index + 1}] Generated sign for POST")
-    msg, ok = do_checkin(profile, token)
-    return msg, ok, my_discord_id
+    result = do_checkin(profile, token)
+    result.discord_id = my_discord_id
+    return result
 
 
 def _is_unset(value) -> bool:
@@ -449,6 +487,8 @@ def _normalize_config(data: dict) -> dict:
     return {
         "profiles": profiles,
         "discordNotify": str(data.get("discordNotify", True)).lower() == "true",
+        "discordNotifyAlreadySignedIn": str(
+            data.get("discordNotifyAlreadySignedIn", True)).lower() == "true",
         "myDiscordID": data.get("myDiscordID", ""),
         "discordWebhook": data.get("discordWebhook", ""),
     }
@@ -467,6 +507,8 @@ def _load_config_from_env() -> dict:
     config = _normalize_config({"profiles": profiles})
     config.update({
         "discordNotify": os.getenv("DISCORD_NOTIFY", "true").lower() == "true",
+        "discordNotifyAlreadySignedIn": os.getenv(
+            "DISCORD_NOTIFY_ALREADY_SIGNED_IN", "true").lower() == "true",
         "myDiscordID": os.getenv("MY_DISCORD_ID", ""),
         "discordWebhook": os.getenv("DISCORD_WEBHOOK", ""),
         "lastSigninDate": os.getenv("LAST_SIGNIN_DATE", ""),
@@ -566,16 +608,19 @@ def main():
         if idx > 0:
             time.sleep(1)  # Throttle requests between profiles
         results.append(checkin_flow(profile, idx, global_discord_id))
-        all_success &= results[-1][1]
+        all_success &= results[-1].success
 
-    skport_resp = "\n\n".join(msg for msg, _, _ in results)
+    skport_resp = "\n\n".join(result.message for result in results)
 
     # Output to stdout (log-safe: no Discord IDs or mention markup here)
     logger.info(skport_resp)
 
     # Trigger Discord webhook; mentions are attached only by notify_user
     if discord_notify and discord_webhook:
-        notify_user(discord_webhook, results)
+        notify_user(
+            discord_webhook, results,
+            notify_already_signed_in=config.get(
+                "discordNotifyAlreadySignedIn", True))
 
     # Export outputs for the GitHub Actions runner (no-op when unset)
     _gh_outputs(executed="true", today_date=today_utc,
