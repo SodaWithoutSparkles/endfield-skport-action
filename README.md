@@ -62,20 +62,22 @@ Full walkthroughs: [docs/setup.md](docs/setup.md)
 | -------------------- | -------- | ------------ | ---------------------------------------------- |
 | `SK_OAUTH_CRED_KEY`  | ✅        | —            | From Local Storage (see above)                 |
 | `SK_TOKEN_CACHE_KEY` | ✅        | —            | From Local Storage (see above)                 |
-| `id`                 | ✅        | —            | Game role ID (from the `sk-game-role` header)  |
+| `gameId`             | ✅        | —            | Game role ID (from the `sk-game-role` header)  |
 | `server`             | —        | `2`          | Server ID (second segment of `sk-game-role`)   |
 | `language`           | —        | `en`         | `sk-language` header value                     |
 | `accountName`        | —        | `Account N`  | Display name used in messages                  |
 | `myDiscordID`        | —        | global value | Discord user ID to `@mention` in notifications |
 
+> 💡 `SK_TOKEN_CACHE_KEY` is assumed valid; the script **refreshes it automatically when the server rejects it** (HTTP 401), using `SK_OAUTH_CRED_KEY` as the durable credential. When `config.json` is present, the fresh token is written back to it. If a refresh ever fails, the oauth credential has expired — re-copy both keys from DevTools.
+
 ### Global settings
 
-| Key                | Default | Description                                                                       |
-| ------------------ | ------- | --------------------------------------------------------------------------------- |
-| `discord_notify`   | `true`  | Send results to Discord. Automatically disabled when no webhook is configured     |
-| `discordWebhook`   | —       | Discord webhook URL (keep empty to disable)                                       |
-| `myDiscordID`      | —       | Default Discord user ID for all profiles                                          |
-| `last_signin_date` | —       | **Actions only** — managed automatically by the workflow; ignored in JSON configs |
+| Key              | Default | Description                                                                       |
+| ---------------- | ------- | --------------------------------------------------------------------------------- |
+| `discordNotify`  | `true`  | Send results to Discord. Automatically disabled when no webhook is configured     |
+| `discordWebhook` | —       | Discord webhook URL (keep empty to disable)                                       |
+| `myDiscordID`    | —       | Default Discord user ID for all profiles                                          |
+| `lastSigninDate` | —       | **Actions only** — managed automatically by the workflow; ignored in JSON configs |
 
 Use `REPLACE_ME` as a placeholder for anything you haven't set yet — it is treated as "not configured".
 

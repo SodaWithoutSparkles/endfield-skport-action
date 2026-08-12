@@ -9,20 +9,23 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-# --- Constants -----------------------------------------------------------
-# Single source of truth for the endpoint: URL is derived from the path used in signing.
+
+USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:153.0) Gecko/20100101 Firefox/153.0'
+REQUEST_TIMEOUT_SECONDS = 10
+
+# Paths observed from devtools
 ENDFIELD_HOST = 'https://zonai.skport.com'
 ENDFIELD_PATH = '/web/v1/game/endfield/attendance'
-URL_ENDFIELD = ENDFIELD_HOST + ENDFIELD_PATH
-
-# server platform id (meaning unknown; matches reference script)
+REFRESH_PATH = '/web/v1/auth/refresh'
+# Magic constants observed from devtools
 PLATFORM = '3'
-SK_GAME_ROLE_PREFIX = '3'   # role prefix meaning unknown; hardcoded to match server
+SK_GAME_ROLE_PREFIX = '3'
 VERSION_NAME = '1.0.0'
-REQUEST_TIMEOUT_SECONDS = 10
+
 # Discord hard limit is 2000; leave headroom for the truncation note
 DISCORD_CONTENT_CAP = 1950
 PLACEHOLDER = 'REPLACE_ME'  # marks unconfigured values in example configs
@@ -30,11 +33,51 @@ PLACEHOLDER = 'REPLACE_ME'  # marks unconfigured values in example configs
 # Server response codes mapped to human-readable explanations.
 # Codes not listed here fall back to the raw message returned by the server.
 KNOWN_CODES = {
-    10000: '⚠️ Token expired! Please update SK_TOKEN_CACHE_KEY in your config.',
+    10000: '⚠️ Token expired — re-copy SK_OAUTH_CRED_KEY and SK_TOKEN_CACHE_KEY from DevTools.',
 }
 
 CONFIG_PATH = os.path.join(os.path.dirname(
     os.path.abspath(__file__)), 'config.json')
+
+
+@dataclass
+class RequestError:
+    """Structured request failure — replaces stringly-typed error text.
+
+    - message: human-readable description (sanitized before reaching logs/Discord)
+    - status: HTTP status code when the server answered
+    - code: server business code from the JSON payload, when present
+    """
+
+    message: str
+    status: int | None = None
+    code: int | None = None
+
+
+@dataclass
+class Profile:
+    """Per-account configuration. Secrets keep their original env-style names."""
+
+    oauth_cred: str = ""
+    token: str = ""
+    game_id: str = ""
+    server: str = "2"
+    language: str = "en"
+    account_name: str = ""
+    discord_id: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict, index: int) -> "Profile":
+        """Parses one profile object from config.json / SKPORT_PROFILES_JSON."""
+        return cls(
+            oauth_cred=data.get("SK_OAUTH_CRED_KEY", ""),
+            token=data.get("SK_TOKEN_CACHE_KEY", ""),
+            game_id=str(data.get("gameId", "")),
+            server=str(data.get("server", "2")),
+            language=data.get("language", "en"),
+            account_name=data.get("accountName") or f"Account {index + 1}",
+            discord_id=data.get("myDiscordID", ""),
+        )
 
 
 def write_gh_output(key: str, value: str):
@@ -113,32 +156,56 @@ def post_webhook(webhook_url: str, data: str):
         with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as response:
             pass
     except Exception as err:
-        logger.warning(f'Failed to send Discord notification: {err}')
+        # The webhook URL carries a secret token; never let it reach the logs.
+        logger.warning(
+            f'Failed to send Discord notification: {_sanitize(str(err), (webhook_url,))}')
 
 
-def _handle_error(account_name: str, my_discord_id: str, error_text: str, secrets: tuple) -> tuple[str, bool]:
-    """Builds the shared failure message for the status check and check-in paths."""
-    safe_text = _sanitize(error_text, secrets)
-    return (f"Check-in failed for {account_name}\n"
-            f"Endfield: {discord_ping(my_discord_id)}{safe_text}"), False
+def notify_user(webhook_url: str, results: list[tuple[str, str]]) -> None:
+    """Sends per-profile results to Discord, attaching each profile's @mention.
+
+    Discord-specific concerns (mentions) live only here — the messages that
+    main() logs never contain Discord user IDs.
+    """
+    if _is_unset(webhook_url):
+        return
+
+    lines = []
+    for message, discord_id in results:
+        ping = discord_ping(discord_id)
+        if ping and "\nEndfield: " in message:
+            # Every flow message carries an "Endfield:" line; drop the mention
+            # in right after it so Discord sees the same format as before.
+            message = message.replace(
+                "\nEndfield: ", f"\nEndfield: {ping}", 1)
+        lines.append(message)
+    post_webhook(webhook_url, "\n\n".join(lines))
 
 
-def _handle_check_status_error(account_name: str, my_discord_id: str, error_text: str, secrets: tuple) -> tuple[str, bool]:
-    """Error handler for the attendance status check (GET)."""
-    return _handle_error(account_name, my_discord_id, error_text, secrets)
+def _handle_error(account_name: str, error: RequestError, profile: Profile, action: str) -> tuple[str, bool]:
+    """Builds the failure message shared by the status check and check-in paths.
+
+    `action` prefixes the message ("Status check" / "Check-in") so a failed
+    GET is distinguishable from a failed POST. The message is log-safe — the
+    Discord @mention is attached later by notify_user().
+    """
+    safe_text = _sanitize(
+        error.message, (profile.oauth_cred, profile.token, profile.game_id,))
+    return (f"{action} failed for {account_name}\n"
+            f"Endfield: {safe_text}"), False
 
 
-def _handle_checkin_error(account_name: str, my_discord_id: str, error_text: str, secrets: tuple) -> tuple[str, bool]:
-    """Error handler for the check-in POST."""
-    return _handle_error(account_name, my_discord_id, error_text, secrets)
+def _generate_headers(profile: Profile) -> dict:
+    """Builds the shared request headers with a fresh timestamp.
 
-
-def _generate_headers(sk_oauth_cred: str, game_id: str, server: str, language: str) -> dict:
-    """Builds the shared request headers. The 'sign' header is added per request."""
+    Callers add the 'sign' header per request. Generating a fresh header set
+    per request means a retry after a token refresh never reuses a stale
+    `timestamp` in the signature.
+    """
     return {
         'Accept': '*/*',
         'Content-Type': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:153.0) Gecko/20100101 Firefox/153.0',
+        'User-Agent': USER_AGENT,
         'Referer': 'https://game.skport.com/',
         'platform': PLATFORM,
         'vName': VERSION_NAME,
@@ -149,127 +216,291 @@ def _generate_headers(sk_oauth_cred: str, game_id: str, server: str, language: s
         'Sec-Fetch-Site': 'same-site',
         'Priority': 'u=0',
         'TE': 'trailers',
-        'cred': sk_oauth_cred,
-        'sk-game-role': f"{SK_GAME_ROLE_PREFIX}_{game_id}_{server}",
-        'sk-language': language,
+        'cred': profile.oauth_cred,
+        'sk-game-role': f"{SK_GAME_ROLE_PREFIX}_{profile.game_id}_{profile.server}",
+        'sk-language': profile.language,
         'timestamp': str(int(time.time())),
     }
 
 
-def _request_json(headers: dict, method: str, token: str) -> tuple[dict | None, str]:
-    """Signs the headers and performs the request against the attendance endpoint.
+def _request_json(profile: Profile, method: str, token: str, path: str = ENDFIELD_PATH) -> tuple[dict | None, RequestError | None]:
+    """Signs a fresh header set and performs the request against `path`.
 
-    Returns (response_json, error_text):
+    Headers (and therefore the `timestamp` used in signing) are regenerated
+    on every call, so a retry after a token refresh never reuses a stale
+    timestamp.
+
+    Returns (response_json, error):
     - response_json: parsed response object, or None when the request failed
-    - error_text: '' on success, otherwise a description of the failure
+    - error: RequestError describing the failure, or None on success
     """
-    signed_headers = dict(headers)
-    signed_headers['sign'] = generate_sign(
-        ENDFIELD_PATH, method, signed_headers, '', '', token)
+    headers = _generate_headers(profile)
+    headers['sign'] = generate_sign(path, method, headers, '', '', token)
 
     try:
         req = urllib.request.Request(
-            URL_ENDFIELD, headers=signed_headers, method=method)
+            ENDFIELD_HOST + path, headers=headers, method=method)
         with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as response:
             status_code = response.getcode()
             raw_text = response.read().decode('utf-8')
     except urllib.error.HTTPError as e:
-        return None, f"HTTP Error {e.code}"
+        return None, RequestError(message=f"HTTP Error {e.code}", status=e.code)
     except urllib.error.URLError as e:
-        return None, f"Network Error: {e.reason}"
-    except Exception as e:
-        return None, f"Execution Error: {e}"
+        return None, RequestError(message=f"Network Error: {e.reason}")
+    except OSError as e:
+        # Socket errors and timeouts (URLError above is itself an OSError).
+        # Anything else is a programming bug and should crash loudly.
+        return None, RequestError(message=f"Network Error: {e}")
 
     if status_code < 200 or status_code >= 300:
-        return None, f"HTTP Error {status_code}"
+        return None, RequestError(
+            message=f"HTTP Error {status_code}", status=status_code)
 
     try:
         response_json = json.loads(raw_text)
     except json.JSONDecodeError:
-        return None, "Invalid JSON response from server."
+        return None, RequestError(message="Invalid JSON response from server.")
     if not isinstance(response_json, dict):
-        return None, "Unexpected response from server."
-    return response_json, ""
+        return None, RequestError(message="Unexpected response from server.")
+    return response_json, None
 
 
-def check_attendence_status(headers: dict, token: str) -> tuple[bool | None, int, str]:
-    """GETs the attendance calendar to see if today's reward is already claimed.
+def refresh_cache_token(profile: Profile) -> str:
+    """Refreshes the SK token and returns the new token.
 
-    Returns (already_signed_in, days_done, error_text):
-    - already_signed_in: True/False, or None when the check failed
-    - days_done: number of claimed days from the calendar
-    - error_text: '' on success, otherwise a description of the failure
+    Reuses the standard header generation, including a `sign` header.
+    Emperically observed to not verify or require a `sign`, 
+    including to match behaviour observed from devtools.
     """
-    response_json, error = _request_json(headers, 'GET', token)
-    if error:
-        return None, 0, error
+    headers = _generate_headers(profile)
+    headers['sign'] = generate_sign(
+        REFRESH_PATH, 'GET', headers, '', '', profile.token)
 
+    req = urllib.request.Request(
+        ENDFIELD_HOST + REFRESH_PATH,
+        headers=headers,
+        method='GET',
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+            raw_text = response.read().decode('utf-8')
+    except urllib.error.HTTPError as e:
+        body = e.read().decode('utf-8', errors='replace')
+        raise RuntimeError(f"Refresh HTTP {e.code}: {body}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Refresh network error: {e.reason}") from e
+    except OSError as e:
+        raise RuntimeError(f"Refresh network error: {e}") from e
+
+    try:
+        response_json = json.loads(raw_text)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Refresh returned invalid JSON: {raw_text}") from e
+
+    if not isinstance(response_json, dict):
+        raise RuntimeError(f"Unexpected refresh response: {response_json!r}")
+
+    if response_json.get("code") != 0:
+        raise RuntimeError(
+            f"Refresh failed: code={response_json.get('code')}, "
+            f"message={response_json.get('message') or response_json.get('msg')}"
+        )
+
+    token = (response_json.get("data") or {}).get("token")
+    if not token:
+        raise RuntimeError(
+            f"Refresh succeeded but no token was returned: {response_json!r}")
+
+    logger.info("Successfully refreshed SK_TOKEN_CACHE_KEY")
+    return token
+
+
+def persist_refreshed_token(profile: Profile, new_token: str) -> bool:
+    """Writes the refreshed SK_TOKEN_CACHE_KEY back into config.json.
+
+    Only the profile whose SK_OAUTH_CRED_KEY matches is touched, so env-driven
+    profiles never overwrite a different local profile. Returns False (no-op)
+    when config.json is absent or the credential isn't found there.
+    """
+    if not os.path.exists(CONFIG_PATH):
+        return False
+    try:
+        data = _read_json_file(CONFIG_PATH)
+    except (FileNotFoundError, ValueError) as e:
+        logger.warning(f"Could not persist refreshed token: {e}")
+        return False
+
+    for entry in data.get("profiles", []):
+        if isinstance(entry, dict) and entry.get("SK_OAUTH_CRED_KEY") == profile.oauth_cred:
+            entry["SK_TOKEN_CACHE_KEY"] = new_token
+            break
+    else:
+        return False
+
+    tmp_path = CONFIG_PATH + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+    os.replace(tmp_path, CONFIG_PATH)
+    logger.info("Persisted refreshed SK_TOKEN_CACHE_KEY to config.json")
+    return True
+
+
+def _token_expired(error: RequestError | None, response_json: dict | None) -> bool:
+    """True when the server rejected the request because the token expired."""
+    return (error is not None and error.status == 401) or (
+        isinstance(response_json, dict) and response_json.get("code") == 10000)
+
+
+def _server_error(response_json: dict) -> RequestError | None:
+    """Builds a RequestError when the server payload itself carries a failure."""
     code = response_json.get("code")
     if code in KNOWN_CODES:
-        return None, 0, KNOWN_CODES[code]
-
+        return RequestError(message=KNOWN_CODES[code], code=code)
     msg = response_json.get("message") or response_json.get(
         "msg") or "Unknown status"
     if msg != "OK":
-        return None, 0, msg
+        return RequestError(message=msg, code=code)
+    return None
+
+
+def _out_of_sync_error() -> RequestError:
+    """Error for a fresh token the server still rejects (both keys out of sync)."""
+    return RequestError(
+        "Token expired even after refresh — SK_OAUTH_CRED_KEY and "
+        "SK_TOKEN_CACHE_KEY are out of sync. Re-copy both keys from DevTools."
+    )
+
+
+def _request_with_refresh(profile: Profile, method: str, token: str) -> tuple[dict | None, RequestError | None, str]:
+    """Performs the request, treating the cache token as valid.
+
+    Refreshing is strictly a 401 handler: when the server rejects the token
+    (HTTP 401 or business code 10000), the token is refreshed once and the
+    request is retried with the fresh token. The refreshed token is persisted
+    back into config.json when present, and threaded through the return value
+    so subsequent requests reuse it.
+
+    A failed refresh means SK_OAUTH_CRED_KEY has expired or changed; a refresh
+    that succeeds but still gets rejected means the two keys are out of sync.
+    Both cases tell the user to re-copy both keys from DevTools.
+
+    Returns (response_json, error, token):
+    - response_json: parsed response object, or None when the request failed
+    - error: RequestError describing the failure, or None on success
+    - token: the (possibly refreshed) token, for reuse in subsequent requests
+    """
+    response_json, error = _request_json(profile, method, token)
+    if not _token_expired(error, response_json):
+        return response_json, error, token
+
+    logger.info(
+        "Token expired (HTTP 401 or code 10000); refreshing SK_TOKEN_CACHE_KEY")
+    try:
+        new_token = refresh_cache_token(profile)
+    except RuntimeError as e:
+        details = _sanitize(
+            str(e), (profile.oauth_cred, profile.token, profile.game_id))
+        details_suffix = f" Details: {details}" if details else ""
+        return None, RequestError(
+            "Token expired and refresh failed — SK_OAUTH_CRED_KEY has expired or "
+            f"changed. Re-copy both keys from DevTools.{details_suffix}"
+        ), token
+
+    persist_refreshed_token(profile, new_token)
+
+    logger.info("Retrying request with refreshed token")
+    response_json, error = _request_json(profile, method, new_token)
+    if _token_expired(error, response_json):
+        return None, _out_of_sync_error(), new_token
+    return response_json, error, new_token
+
+
+def check_attendance_status(profile: Profile, token: str) -> tuple[bool | None, int, RequestError | None, str]:
+    """GETs the attendance calendar to see if today's reward is already claimed.
+
+    The cache token is assumed valid; a 401 triggers a one-shot refresh and
+    retry inside _request_with_refresh.
+
+    Returns (already_signed_in, days_done, error, token):
+    - already_signed_in: True/False, or None when the check failed
+    - days_done: number of claimed days from the calendar
+    - error: RequestError on failure, or None on success
+    - token: the (possibly refreshed) token, for the subsequent POST
+    """
+    response_json, error, token = _request_with_refresh(profile, 'GET', token)
+    if error:
+        return None, 0, error, token
+
+    server_error = _server_error(response_json)
+    if server_error:
+        return None, 0, server_error, token
 
     data = response_json.get("data") or {}
     calendar = data.get("calendar") or []
     days_done = sum(1 for day in calendar if isinstance(
         day, dict) and day.get("done"))
-    return bool(data.get("hasToday", False)), days_done, ""
+    return bool(data.get("hasToday", False)), days_done, None, token
 
 
-def do_checkin(headers: dict, token: str, account_name: str, my_discord_id: str, secrets: tuple) -> tuple[str, bool]:
-    """POSTs the check-in and returns (message, success)."""
-    response_json, error = _request_json(headers, 'POST', token)
+def do_checkin(profile: Profile, token: str) -> tuple[str, bool]:
+    """POSTs the check-in (a 401 refreshes the token once); returns (message, success)."""
+    response_json, error, _ = _request_with_refresh(profile, 'POST', token)
+    # The server answers a duplicate claim with HTTP 403; treat it as success
+    # so a race between the status check and the POST doesn't fail the run.
+    if error is not None and error.status == 403:
+        return (f"Check-in skipped for {profile.account_name} — already signed in "
+                f"(server rejected the POST with HTTP 403)\n"
+                f"Endfield: ✅ Already checked in today."), True
     if error:
-        return _handle_checkin_error(account_name, my_discord_id, error, secrets)
+        return _handle_error(profile.account_name, error, profile, "Check-in")
 
-    code = response_json.get("code")
-    if code in KNOWN_CODES:
-        return _handle_checkin_error(account_name, my_discord_id, KNOWN_CODES[code], secrets)
+    server_error = _server_error(response_json)
+    if server_error:
+        return _handle_error(profile.account_name, server_error, profile, "Check-in")
 
-    msg = response_json.get("message") or response_json.get(
-        "msg") or "Unknown status"
-    is_error = msg != "OK"
-    response_msg = (f"Check-in completed for {account_name}\n"
-                    f"Endfield: {discord_ping(my_discord_id) if is_error else ''}{msg}")
-    return response_msg, not is_error
+    msg = response_json.get("message") or response_json.get("msg") or "OK"
+    return (f"Check-in completed for {profile.account_name}\n"
+            f"Endfield: {msg}"), True
 
 
-def checkin_flow(profile: dict, index: int, global_discord_id: str) -> tuple[str, bool]:
-    """Runs the full check-in flow for one profile: status check, then POST if needed.
+def checkin_flow(profile: Profile, index: int, global_discord_id: str) -> tuple[str, bool, str]:
+    """Runs the check-in flow for one profile: status check, then POST if needed.
+
+    SK_TOKEN_CACHE_KEY is assumed valid; refreshing is strictly a 401 handler
+    inside _request_with_refresh (refresh once, retry with the fresh token). A
+    failed refresh means SK_OAUTH_CRED_KEY has expired or changed: the profile
+    fails and the user is told to re-copy both keys. The status check may
+    refresh the token mid-flow; the fresh token is threaded through to the POST.
 
     Fails closed: a failed status check aborts the check-in, mirroring normal
     user behaviour (never POST twice in one day).
+
+    Return:
+        A tuple of (message, success, discord_id).
     """
-    sk_oauth_cred = profile.get("SK_OAUTH_CRED_KEY", "")
-    sk_token_cache = profile.get("SK_TOKEN_CACHE_KEY", "")
-    game_id = profile.get("id", "")
-    server = profile.get("server", "2")
-    language = profile.get("language", "en")
-    account_name = profile.get("accountName", f"Account {index + 1}")
-    my_discord_id = profile.get("myDiscordID", global_discord_id)
+    my_discord_id = profile.discord_id or global_discord_id
 
-    if _is_unset(sk_oauth_cred) or _is_unset(sk_token_cache) or _is_unset(game_id):
-        return f"[Profile {index + 1}] Skip: Missing configuration credentials.", False
+    # A profile without credentials is a configuration gap, not a failure:
+    # skip it without failing the run (other profiles may be fully configured).
+    if _is_unset(profile.oauth_cred) or _is_unset(profile.token) or _is_unset(profile.game_id):
+        return f"[Profile {index + 1}] Skip: Missing configuration credentials.", True, my_discord_id
 
-    secrets = (sk_oauth_cred, sk_token_cache)
-    headers = _generate_headers(sk_oauth_cred, game_id, server, language)
-
-    already_signed_in, days_done, status_error = check_attendence_status(
-        headers, sk_token_cache)
+    already_signed_in, days_done, status_error, token = check_attendance_status(
+        profile, profile.token)
     if status_error:
-        return _handle_check_status_error(account_name, my_discord_id, status_error, secrets)
+        msg, ok = _handle_error(
+            profile.account_name, status_error, profile, "Status check")
+        return msg, ok, my_discord_id
     if already_signed_in:
         day_word = "day" if days_done == 1 else "days"
-        return (f"Check-in skipped for {account_name} — already signed in today "
+        return (f"Check-in skipped for {profile.account_name} — already signed in today "
                 f"({days_done} {day_word} claimed)\n"
-                f"Endfield: {discord_ping(my_discord_id)}✅ Already checked in today."), True
+                f"Endfield: ✅ Already checked in today."), True, my_discord_id
 
     logger.debug(f"[Profile {index + 1}] Generated sign for POST")
-    return do_checkin(headers, sk_token_cache, account_name, my_discord_id, secrets)
+    msg, ok = do_checkin(profile, token)
+    return msg, ok, my_discord_id
 
 
 def _is_unset(value) -> bool:
@@ -312,10 +543,10 @@ def _load_config_from_env() -> dict:
 
     return {
         "profiles": profiles,
-        "discord_notify": os.getenv("DISCORD_NOTIFY", "true").lower() == "true",
+        "discordNotify": os.getenv("DISCORD_NOTIFY", "true").lower() == "true",
         "myDiscordID": os.getenv("MY_DISCORD_ID", ""),
         "discordWebhook": os.getenv("DISCORD_WEBHOOK", ""),
-        "last_signin_date": os.getenv("LAST_SIGNIN_DATE", ""),
+        "lastSigninDate": os.getenv("LAST_SIGNIN_DATE", ""),
     }
 
 
@@ -335,7 +566,7 @@ def _load_config_from_json() -> dict:
 
     return {
         "profiles": profiles,
-        "discord_notify": str(data.get("discord_notify", True)).lower() == "true",
+        "discordNotify": str(data.get("discordNotify", True)).lower() == "true",
         "myDiscordID": data.get("myDiscordID", ""),
         "discordWebhook": data.get("discordWebhook", ""),
     }
@@ -363,19 +594,22 @@ def load_config(source: str) -> dict:
 
 
 def main():
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s [%(levelname)s] %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S',
-    )
-
     parser = argparse.ArgumentParser(description="Skport Auto-Sign Tool")
     parser.add_argument("--config-source", choices=["env", "json", "both"],
                         default="both",
                         help="Config source: env, json, or both with env overriding json (default: both)")
     parser.add_argument("--force", action="store_true",
-                        help="Bypass daily check-in deduplication check")
+                        help="Bypass only the local last_signin_date dedup check; "
+                             "the server-side hasToday check still applies")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="Enable debug logging")
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+    )
 
     try:
         config = load_config(args.config_source)
@@ -387,11 +621,13 @@ def main():
 
     today_utc = datetime.datetime.now(
         datetime.timezone.utc).strftime('%Y-%m-%d')
-    last_signin = config.get("last_signin_date", "")
+    last_signin = config.get("lastSigninDate", "")
 
     # Same-day dedup only applies when LAST_SIGNIN_DATE is provided (env / GitHub
     # Actions, where the workflow persists it). JSON configs skip this entirely:
     # the server-side hasToday check in checkin_flow is the real guard.
+    # --force bypasses only this local check; the server still refuses a
+    # duplicate claim (hasToday / HTTP 403).
     if not args.force and last_signin == today_utc:
         logger.info(
             f"Already completed sign-in for today ({today_utc}). Skipping execution.")
@@ -400,8 +636,9 @@ def main():
         write_gh_output("today_date", today_utc)
         return
 
-    profiles = config["profiles"]
-    discord_notify = config.get("discord_notify", True)
+    profiles = [Profile.from_dict(p, idx)
+                for idx, p in enumerate(config["profiles"])]
+    discord_notify = config.get("discordNotify", True)
     global_discord_id = config.get("myDiscordID", "")
     discord_webhook = config.get("discordWebhook", "")
 
@@ -412,24 +649,27 @@ def main():
         discord_notify = False
 
     messages = []
+    results = []
     all_success = True
 
     for idx, profile in enumerate(profiles):
         if idx > 0:
             time.sleep(1)  # Throttle requests between profiles
-        msg, success = checkin_flow(profile, idx, global_discord_id)
+        msg, success, discord_id = checkin_flow(
+            profile, idx, global_discord_id)
         messages.append(msg)
+        results.append((msg, discord_id))
         if not success:
             all_success = False
 
     skport_resp = "\n\n".join(messages)
 
-    # Output to stdout
+    # Output to stdout (log-safe: no Discord IDs or mention markup here)
     logger.info(skport_resp)
 
-    # Trigger Discord webhook
+    # Trigger Discord webhook; mentions are attached only by notify_user
     if discord_notify and discord_webhook:
-        post_webhook(discord_webhook, skport_resp)
+        notify_user(discord_webhook, results)
 
     # Export outputs for GitHub Actions runner (no-op when GITHUB_OUTPUT is unset)
     write_gh_output("executed", "true")
