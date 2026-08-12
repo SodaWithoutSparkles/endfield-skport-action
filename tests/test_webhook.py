@@ -4,6 +4,7 @@ Run with:  python -m unittest discover -s tests -v
 """
 import json
 import unittest
+import urllib.error
 from unittest import mock
 
 import main
@@ -84,6 +85,25 @@ class PostWebhookTest(unittest.TestCase):
             main.post_webhook(WEBHOOK, 'hello')
         self.assertNotIn(WEBHOOK, '\n'.join(logs.output))
         self.assertIn('[REDACTED]', '\n'.join(logs.output))
+
+    def test_http_error_body_logged(self):
+        """The server's error body is surfaced so 400s are self-diagnosing."""
+        class FailingResponse:
+            def read(self):
+                return b'{"message": "Cannot send an empty message", "code": 50006}'
+
+        def failing_urlopen(req, timeout=0):
+            raise urllib.error.HTTPError(
+                url='', code=400, msg='Bad Request', hdrs=None,
+                fp=FailingResponse())
+
+        with mock.patch.object(main.urllib.request, 'urlopen', failing_urlopen), \
+                self.assertLogs(main.logger, level='WARNING') as logs:
+            main.post_webhook(WEBHOOK, 'hello')
+        output = '\n'.join(logs.output)
+        self.assertIn('400', output)
+        self.assertIn('Cannot send an empty message', output)
+        self.assertNotIn(WEBHOOK, output)
 
 
 class SanitizeTest(unittest.TestCase):
@@ -173,6 +193,17 @@ class NotifyUserTest(unittest.TestCase):
             main.notify_user(WEBHOOK, results)
         self.assertIn('already signed in today',
                       captured['payload']['content'])
+
+    def test_all_filtered_results_do_not_post(self):
+        """Filtering every result must not send an empty message (Discord 400)."""
+        captured, fake = capture_urlopen()
+        results = [
+            main.CheckinResult("Check-in skipped for A — already signed in today "
+                               "(2 days claimed)\nEndfield: ✅ Already checked in today.",
+                               main.ResultState.ALREADY_SIGNED_IN, "")]
+        with mock.patch.object(main.urllib.request, 'urlopen', fake):
+            main.notify_user(WEBHOOK, results, notify_already_signed_in=False)
+        self.assertNotIn('payload', captured)  # nothing was posted
 
     def test_unset_webhook_is_noop(self):
         with mock.patch.object(main.urllib.request, 'urlopen') as urlopen:

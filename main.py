@@ -162,8 +162,17 @@ def post_webhook(webhook_url: str, data: str):
             pass
     except Exception as err:
         # The webhook URL carries a secret token; never let it reach the logs.
+        detail = ""
+        if isinstance(err, urllib.error.HTTPError):
+            # Discord's error body says why (e.g. 'Cannot send an empty message').
+            try:
+                body = err.read().decode('utf-8', 'replace')
+                if body:
+                    detail = f" — {body[:200]}"
+            except Exception:
+                pass
         logger.warning(
-            f'Failed to send Discord notification: {_sanitize(str(err), (webhook_url,))}')
+            f'Failed to send Discord notification: {_sanitize(str(err), (webhook_url,))}{detail}')
 
 
 def notify_user(webhook_url: str, results: list[CheckinResult],
@@ -186,6 +195,10 @@ def notify_user(webhook_url: str, results: list[CheckinResult],
             message = message.replace(
                 "\nEndfield: ", f"\nEndfield: <@{result.discord_id}> ", 1)
         lines.append(message)
+    if not lines:
+        # Nothing left to report (e.g. every profile was already signed in and
+        # those notices are disabled); sending an empty message is a 400.
+        return
     post_webhook(webhook_url, "\n\n".join(lines))
 
 
