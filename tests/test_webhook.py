@@ -105,7 +105,8 @@ class NotifyUserTest(unittest.TestCase):
     def test_ping_inserted_only_in_discord_content(self):
         """The mention is added by notify_user, not by the flow messages."""
         captured, fake = capture_urlopen()
-        results = [("Check-in completed for Player1\nEndfield: OK", "12345")]
+        results = [
+            ("Check-in completed for Player1\nEndfield: OK", True, "12345")]
         with mock.patch.object(main.urllib.request, 'urlopen', fake):
             main.notify_user(WEBHOOK, results)
         self.assertEqual(
@@ -115,7 +116,7 @@ class NotifyUserTest(unittest.TestCase):
     def test_no_ping_when_id_unset(self):
         captured, fake = capture_urlopen()
         results = [
-            ("Check-in completed for Player1\nEndfield: OK", "REPLACE_ME")]
+            ("Check-in completed for Player1\nEndfield: OK", True, "REPLACE_ME")]
         with mock.patch.object(main.urllib.request, 'urlopen', fake):
             main.notify_user(WEBHOOK, results)
         self.assertEqual(
@@ -126,7 +127,7 @@ class NotifyUserTest(unittest.TestCase):
         """Skip-style messages have no mention target; leave them untouched."""
         captured, fake = capture_urlopen()
         results = [
-            ("[Profile 1] Skip: Missing configuration credentials.", "12345")]
+            ("[Profile 1] Skip: Missing configuration credentials.", True, "12345")]
         with mock.patch.object(main.urllib.request, 'urlopen', fake):
             main.notify_user(WEBHOOK, results)
         self.assertEqual(
@@ -136,8 +137,8 @@ class NotifyUserTest(unittest.TestCase):
     def test_multiple_results_joined_with_individual_pings(self):
         captured, fake = capture_urlopen()
         results = [
-            ("Check-in completed for A\nEndfield: OK", "1"),
-            ("Check-in completed for B\nEndfield: OK", ""),
+            ("Check-in completed for A\nEndfield: OK", True, "1"),
+            ("Check-in completed for B\nEndfield: OK", True, ""),
         ]
         with mock.patch.object(main.urllib.request, 'urlopen', fake):
             main.notify_user(WEBHOOK, results)
@@ -148,7 +149,7 @@ class NotifyUserTest(unittest.TestCase):
 
     def test_unset_webhook_is_noop(self):
         with mock.patch.object(main.urllib.request, 'urlopen') as urlopen:
-            main.notify_user('', [("x", "1")])
+            main.notify_user('', [("x", True, "1")])
         urlopen.assert_not_called()
 
 

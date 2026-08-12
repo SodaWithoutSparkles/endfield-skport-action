@@ -142,7 +142,7 @@ def post_webhook(webhook_url: str, data: str):
             f'Failed to send Discord notification: {_sanitize(str(err), (webhook_url,))}')
 
 
-def notify_user(webhook_url: str, results: list[tuple[str, str]]) -> None:
+def notify_user(webhook_url: str, results: list[tuple[str, bool, str]]) -> None:
     """Sends per-profile results to Discord, attaching each profile's @mention.
 
     Mentions are attached only here — the messages main() logs never contain
@@ -152,7 +152,7 @@ def notify_user(webhook_url: str, results: list[tuple[str, str]]) -> None:
         return
 
     lines = []
-    for message, discord_id in results:
+    for message, _, discord_id in results:
         if discord_id and not _is_unset(discord_id) and "\nEndfield: " in message:
             message = message.replace(
                 "\nEndfield: ", f"\nEndfield: <@{discord_id}> ", 1)
@@ -568,7 +568,7 @@ def main():
         results.append(checkin_flow(profile, idx, global_discord_id))
         all_success &= results[-1][1]
 
-    skport_resp = "\n\n".join(msg for msg, _ in results)
+    skport_resp = "\n\n".join(msg for msg, _, _ in results)
 
     # Output to stdout (log-safe: no Discord IDs or mention markup here)
     logger.info(skport_resp)
