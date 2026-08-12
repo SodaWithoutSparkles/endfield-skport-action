@@ -143,7 +143,7 @@ def post_webhook(webhook_url: str, data: str):
         "\n...[truncated]" if len(data) > DISCORD_CONTENT_CAP else data
     payload = json.dumps({
         'username': 'Skport Endfield Auto-Sign',
-        'avatar_url': 'https://i.imgur.com/TguAOiA.png',
+        'avatar_url': 'https://raw.githubusercontent.com/SodaWithoutSparkles/endfield-skport-action/refs/heads/main/assets/discord_avatar.png',
         'content': content
     }).encode('utf-8')
 
