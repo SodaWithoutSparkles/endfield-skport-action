@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      variables: write # Required for 'gh variable set' without git commits
+      # variables: write  # not a valid permission scope — variable writes commented out
     environment: 
       name: acc1
       deployment: false
@@ -47,21 +47,24 @@ jobs:
 
           python main.py --config-source env $EXTRA_FLAGS
 
-      - name: Update Repository Variables (Zero-Commit State)
-        if: always() && !cancelled()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # The script writes run_status for every path (SUCCESS / FAILED /
-          # CONFIG_ERROR / SKIPPED), so LAST_RUN_STATUS always reflects the
-          # latest outcome. Guard against an empty value in case the script
-          # crashed before it could write its outputs.
-          RUN_STATUS="${{ steps.run_sign.outputs.run_status }}"
-          if [ -n "$RUN_STATUS" ]; then
-            gh variable set LAST_RUN_STATUS --body "$RUN_STATUS"
-          fi
-          # Only persist today's date on full success so later scheduled runs
-          # retry profiles that failed earlier in the day.
-          if [ "$RUN_STATUS" = "SUCCESS" ]; then
-            gh variable set LAST_SIGNIN_DATE --body "${{ steps.run_sign.outputs.today_date }}"
-          fi
+      # Step commented out: writing repo variables requires a permission scope
+      # GITHUB_TOKEN doesn't have. Same-day dedup still holds via the server-side
+      # hasToday check, so runs are safe to repeat.
+      # - name: Update Repository Variables (Zero-Commit State)
+      #   if: always() && !cancelled()
+      #   env:
+      #     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #   run: |
+      #     # The script writes run_status for every path (SUCCESS / FAILED /
+      #     # CONFIG_ERROR / SKIPPED), so LAST_RUN_STATUS always reflects the
+      #     # latest outcome. Guard against an empty value in case the script
+      #     # crashed before it could write its outputs.
+      #     RUN_STATUS="${{ steps.run_sign.outputs.run_status }}"
+      #     if [ -n "$RUN_STATUS" ]; then
+      #       gh variable set LAST_RUN_STATUS --body "$RUN_STATUS" -e acc1
+      #     fi
+      #     # Only persist today's date on full success so later scheduled runs
+      #     # retry profiles that failed earlier in the day.
+      #     if [ "$RUN_STATUS" = "SUCCESS" ]; then
+      #       gh variable set LAST_SIGNIN_DATE --body "${{ steps.run_sign.outputs.today_date }}" -e acc1
+      #     fi
